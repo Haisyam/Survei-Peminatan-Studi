@@ -17,6 +17,6 @@ export async function DELETE(
     return NextResponse.json({ error: "ID tidak valid" }, { status: 400 });
   }
 
-  const success = deleteSurvey(numId);
+  const success = await deleteSurvey(numId);
   return NextResponse.json({ success });
 }

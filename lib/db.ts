@@ -1,54 +1,84 @@
-import Database from "better-sqlite3";
+import { createClient, type Client } from "@libsql/client";
 import path from "path";
 import fs from "fs";
 
-// Pastikan direktori data ada dan persisten
-const dataDir = path.join(process.cwd(), "data");
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
+// Singleton connection
+let clientInstance: Client | null = null;
+let initPromise: Promise<void> | null = null;
+
+export function getDb(): Client {
+  if (!clientInstance) {
+    const tursoUrl = process.env.TURSO_DATABASE_URL;
+    const tursoToken = process.env.TURSO_AUTH_TOKEN;
+
+    if (tursoUrl) {
+      // Koneksi ke Turso Cloud SQLite Database (Persisten di Vercel & Production)
+      clientInstance = createClient({
+        url: tursoUrl,
+        authToken: tursoToken,
+      });
+    } else {
+      // Fallback lokal jika belum diisi env Turso
+      const localDir = path.join(process.cwd(), "data");
+      try {
+        if (!fs.existsSync(localDir)) {
+          fs.mkdirSync(localDir, { recursive: true });
+        }
+      } catch {}
+
+      const localPath = path.join(localDir, "survei.db");
+      clientInstance = createClient({
+        url: `file:${localPath.replace(/\\/g, "/")}`,
+      });
+    }
+  }
+  return clientInstance;
 }
 
-const dbPath = path.join(dataDir, "survei.db");
+export async function initDb(): Promise<void> {
+  if (!initPromise) {
+    initPromise = (async () => {
+      const db = getDb();
 
-// Singleton connection
-let dbInstance: Database.Database | null = null;
+      // Buat tabel HANYA jika belum ada (CREATE TABLE IF NOT EXISTS)
+      // PENTING: TIDAK PERNAH reset table / seed ulang saat server restart
+      await db.execute(`
+        CREATE TABLE IF NOT EXISTS surveys (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          school_name TEXT NOT NULL,
+          school_city TEXT NOT NULL,
+          grade_level TEXT NOT NULL,
+          age_group TEXT NOT NULL,
+          gender TEXT,
+          intention TEXT NOT NULL,
+          target_degree TEXT NOT NULL,
+          target_time TEXT NOT NULL,
+          considered_program TEXT,
+          target_region TEXT NOT NULL,
+          fields_of_study TEXT NOT NULL,
+          funding_source TEXT NOT NULL,
+          obstacles TEXT NOT NULL,
+          info_sources TEXT NOT NULL,
+          needs_counseling TEXT NOT NULL,
+          consent INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+        );
+      `);
 
-export function getDb(): Database.Database {
-  if (!dbInstance) {
-    dbInstance = new Database(dbPath);
-    dbInstance.pragma("journal_mode = WAL");
-    dbInstance.pragma("foreign_keys = ON");
-
-    // Inisialisasi tabel HANYA jika belum ada (CREATE TABLE IF NOT EXISTS)
-    // PENTING: TIDAK PERNAH reset table / seed ulang saat server restart
-    dbInstance.exec(`
-      CREATE TABLE IF NOT EXISTS surveys (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        school_name TEXT NOT NULL,
-        school_city TEXT NOT NULL,
-        grade_level TEXT NOT NULL,
-        age_group TEXT NOT NULL,
-        gender TEXT,
-        intention TEXT NOT NULL,
-        target_degree TEXT NOT NULL,
-        target_time TEXT NOT NULL,
-        considered_program TEXT,
-        target_region TEXT NOT NULL,
-        fields_of_study TEXT NOT NULL,
-        funding_source TEXT NOT NULL,
-        obstacles TEXT NOT NULL,
-        info_sources TEXT NOT NULL,
-        needs_counseling TEXT NOT NULL,
-        consent INTEGER NOT NULL DEFAULT 1,
-        created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_surveys_created_at ON surveys (created_at DESC);
-      CREATE INDEX IF NOT EXISTS idx_surveys_school_city ON surveys (school_city);
-      CREATE INDEX IF NOT EXISTS idx_surveys_target_degree ON surveys (target_degree);
-    `);
+      try {
+        await db.execute(
+          `CREATE INDEX IF NOT EXISTS idx_surveys_created_at ON surveys (created_at DESC);`
+        );
+        await db.execute(
+          `CREATE INDEX IF NOT EXISTS idx_surveys_school_city ON surveys (school_city);`
+        );
+        await db.execute(
+          `CREATE INDEX IF NOT EXISTS idx_surveys_target_degree ON surveys (target_degree);`
+        );
+      } catch {}
+    })();
   }
-  return dbInstance;
+  return initPromise;
 }
 
 export interface SurveyRecord {
@@ -63,10 +93,10 @@ export interface SurveyRecord {
   target_time: string;
   considered_program?: string | null;
   target_region: string;
-  fields_of_study: string[]; // parsed from JSON
+  fields_of_study: string[];
   funding_source: string;
-  obstacles: string[]; // parsed from JSON
-  info_sources: string[]; // parsed from JSON
+  obstacles: string[];
+  info_sources: string[];
   needs_counseling: string;
   consent: number;
   created_at: string;
@@ -91,107 +121,96 @@ export interface SurveyInput {
   consent: boolean;
 }
 
-export function saveSurvey(input: SurveyInput): number {
+export async function saveSurvey(input: SurveyInput): Promise<number> {
+  await initDb();
   const db = getDb();
-  const stmt = db.prepare(`
-    INSERT INTO surveys (
-      school_name,
-      school_city,
-      grade_level,
-      age_group,
-      gender,
-      intention,
-      target_degree,
-      target_time,
-      considered_program,
-      target_region,
-      fields_of_study,
-      funding_source,
-      obstacles,
-      info_sources,
-      needs_counseling,
-      consent
-    ) VALUES (
-      @school_name,
-      @school_city,
-      @grade_level,
-      @age_group,
-      @gender,
-      @intention,
-      @target_degree,
-      @target_time,
-      @considered_program,
-      @target_region,
-      @fields_of_study,
-      @funding_source,
-      @obstacles,
-      @info_sources,
-      @needs_counseling,
-      @consent
-    )
-  `);
 
-  const info = stmt.run({
-    school_name: input.school_name.trim(),
-    school_city: input.school_city.trim(),
-    grade_level: input.grade_level,
-    age_group: input.age_group,
-    gender: input.gender || "Tidak ingin menyebutkan",
-    intention: input.intention,
-    target_degree: input.target_degree,
-    target_time: input.target_time,
-    considered_program: input.considered_program?.trim() || "",
-    target_region: input.target_region,
-    fields_of_study: JSON.stringify(input.fields_of_study || []),
-    funding_source: input.funding_source,
-    obstacles: JSON.stringify(input.obstacles || []),
-    info_sources: JSON.stringify(input.info_sources || []),
-    needs_counseling: input.needs_counseling,
-    consent: input.consent ? 1 : 0,
+  const res = await db.execute({
+    sql: `
+      INSERT INTO surveys (
+        school_name,
+        school_city,
+        grade_level,
+        age_group,
+        gender,
+        intention,
+        target_degree,
+        target_time,
+        considered_program,
+        target_region,
+        fields_of_study,
+        funding_source,
+        obstacles,
+        info_sources,
+        needs_counseling,
+        consent
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    args: [
+      input.school_name.trim(),
+      input.school_city.trim(),
+      input.grade_level,
+      input.age_group,
+      input.gender || "Tidak ingin menyebutkan",
+      input.intention,
+      input.target_degree,
+      input.target_time,
+      input.considered_program?.trim() || "",
+      input.target_region,
+      JSON.stringify(input.fields_of_study || []),
+      input.funding_source,
+      JSON.stringify(input.obstacles || []),
+      JSON.stringify(input.info_sources || []),
+      input.needs_counseling,
+      input.consent ? 1 : 0,
+    ],
   });
 
-  return Number(info.lastInsertRowid);
+  return Number(res.lastInsertRowid ?? 0);
 }
 
-export function getAllSurveys(): SurveyRecord[] {
+export async function getAllSurveys(): Promise<SurveyRecord[]> {
+  await initDb();
   const db = getDb();
-  const rows = db.prepare("SELECT * FROM surveys ORDER BY id DESC").all() as Array<{
-    id: number;
-    school_name: string;
-    school_city: string;
-    grade_level: string;
-    age_group: string;
-    gender: string | null;
-    intention: string;
-    target_degree: string;
-    target_time: string;
-    considered_program: string | null;
-    target_region: string;
-    fields_of_study: string;
-    funding_source: string;
-    obstacles: string;
-    info_sources: string;
-    needs_counseling: string;
-    consent: number;
-    created_at: string;
-  }>;
 
-  return rows.map((r) => ({
-    ...r,
-    fields_of_study: safeJsonParse<string[]>(r.fields_of_study, []),
-    obstacles: safeJsonParse<string[]>(r.obstacles, []),
-    info_sources: safeJsonParse<string[]>(r.info_sources, []),
+  const result = await db.execute("SELECT * FROM surveys ORDER BY id DESC");
+
+  return result.rows.map((row) => ({
+    id: Number(row.id),
+    school_name: String(row.school_name || ""),
+    school_city: String(row.school_city || ""),
+    grade_level: String(row.grade_level || ""),
+    age_group: String(row.age_group || ""),
+    gender: row.gender ? String(row.gender) : null,
+    intention: String(row.intention || ""),
+    target_degree: String(row.target_degree || ""),
+    target_time: String(row.target_time || ""),
+    considered_program: row.considered_program ? String(row.considered_program) : null,
+    target_region: String(row.target_region || ""),
+    fields_of_study: safeJsonParse<string[]>(String(row.fields_of_study || "[]"), []),
+    funding_source: String(row.funding_source || ""),
+    obstacles: safeJsonParse<string[]>(String(row.obstacles || "[]"), []),
+    info_sources: safeJsonParse<string[]>(String(row.info_sources || "[]"), []),
+    needs_counseling: String(row.needs_counseling || ""),
+    consent: Number(row.consent ?? 1),
+    created_at: String(row.created_at || ""),
   }));
 }
 
-export function deleteSurvey(id: number): boolean {
+export async function deleteSurvey(id: number): Promise<boolean> {
+  await initDb();
   const db = getDb();
-  const info = db.prepare("DELETE FROM surveys WHERE id = ?").run(id);
-  return info.changes > 0;
+
+  const res = await db.execute({
+    sql: "DELETE FROM surveys WHERE id = ?",
+    args: [id],
+  });
+
+  return res.rowsAffected > 0;
 }
 
-export function getSurveyStats() {
-  const surveys = getAllSurveys();
+export async function getSurveyStats() {
+  const surveys = await getAllSurveys();
   const total = surveys.length;
 
   const countByField = (items: string[][]): Record<string, number> => {

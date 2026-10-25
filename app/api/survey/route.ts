@@ -96,7 +96,7 @@ export async function POST(req: NextRequest) {
       consent: Boolean(consent),
     };
 
-    const id = saveSurvey(input);
+    const id = await saveSurvey(input);
 
     return NextResponse.json({
       success: true,
@@ -105,8 +105,12 @@ export async function POST(req: NextRequest) {
     });
   } catch (error) {
     console.error("Error saving survey:", error);
+    const errMessage = error instanceof Error ? error.message : String(error);
     return NextResponse.json(
-      { error: "Terjadi kesalahan pada server saat menyimpan survei." },
+      {
+        error: "Terjadi kesalahan pada server saat menyimpan survei.",
+        details: errMessage,
+      },
       { status: 500 }
     );
   }
