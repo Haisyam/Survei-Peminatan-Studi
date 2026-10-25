@@ -350,7 +350,6 @@ export default function SurveyForm() {
                     <option value="Kelas X">Kelas X</option>
                     <option value="Kelas XI">Kelas XI</option>
                     <option value="Kelas XII">Kelas XII</option>
-                    <option value="Kelas XIII">Kelas XIII</option>
                     <option value="Lulusan tahun ini">Lulusan tahun ini</option>
                   </select>
                 </label>
